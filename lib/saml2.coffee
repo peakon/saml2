@@ -26,7 +26,8 @@ class SAMLError extends Error
 
 # Creates an AuthnRequest and returns it as a string of xml along with the randomly generated ID for the created
 # request.
-create_authn_request = (issuer, assert_endpoint, destination, force_authn, context, nameid_format) ->
+create_authn_request = (issuer, assert_endpoint, destination, force_authn, context, nameid_format, now) ->
+  now ?= new Date()
   if context?
     context_element = { 'saml:AuthnContextClassRef': context.class_refs, '@Comparison': context.comparison }
 
@@ -37,7 +38,7 @@ create_authn_request = (issuer, assert_endpoint, destination, force_authn, conte
       '@xmlns:saml': XMLNS.SAML
       '@Version': '2.0'
       '@ID': id
-      '@IssueInstant': (new Date()).toISOString()
+      '@IssueInstant': now.toISOString()
       '@Destination': destination
       '@AssertionConsumerServiceURL': assert_endpoint
       '@ProtocolBinding': 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST'
@@ -59,7 +60,8 @@ sign_authn_request = (xml, private_key, options) ->
   return signer.getSignedXml()
 
 # Creates metadata and returns it as a string of XML. The metadata has one POST assertion endpoint.
-create_metadata = (entity_id, assert_endpoint, signing_certificates, encryption_certificates) ->
+create_metadata = (entity_id, assert_endpoint, signing_certificates, encryption_certificates, now) ->
+  now ?= new Date()
   signing_cert_descriptors = for signing_certificate in signing_certificates or []
     certificate_to_keyinfo('signing', signing_certificate)
 
@@ -71,7 +73,7 @@ create_metadata = (entity_id, assert_endpoint, signing_certificates, encryption_
       '@xmlns:md': XMLNS.MD
       '@xmlns:ds': XMLNS.DS
       '@entityID': entity_id
-      '@validUntil': (new Date(Date.now() + 1000 * 60 * 60)).toISOString()
+      '@validUntil': new Date(now.valueOf() + 1000 * 60 * 60).toISOString()
       'md:SPSSODescriptor':
         '@protocolSupportEnumeration': 'urn:oasis:names:tc:SAML:1.1:protocol urn:oasis:names:tc:SAML:2.0:protocol'
         'md:KeyDescriptor': signing_cert_descriptors.concat(encryption_cert_descriptors)
@@ -85,7 +87,8 @@ create_metadata = (entity_id, assert_endpoint, signing_certificates, encryption_
   .end()
 
 # Creates a LogoutRequest and returns it as a string of xml.
-create_logout_request = (issuer, name_id, session_index, destination) ->
+create_logout_request = (issuer, name_id, session_index, destination, now) ->
+  now ?= new Date()
   id = '_' + crypto.randomBytes( 21 ).toString( 'hex' )
   xml = xmlbuilder.create
     'samlp:LogoutRequest':
@@ -93,7 +96,7 @@ create_logout_request = (issuer, name_id, session_index, destination) ->
       '@xmlns:saml': XMLNS.SAML
       '@ID': id
       '@Version': '2.0'
-      '@IssueInstant': (new Date()).toISOString()
+      '@IssueInstant': now.toISOString()
       '@Destination': destination
       'saml:Issuer': issuer
       'saml:NameID': name_id
@@ -103,13 +106,14 @@ create_logout_request = (issuer, name_id, session_index, destination) ->
   {id, xml}
 
 # Creates a LogoutResponse and returns it as a string of xml.
-create_logout_response = (issuer, in_response_to, destination, status='urn:oasis:names:tc:SAML:2.0:status:Success') ->
+create_logout_response = (issuer, in_response_to, destination, status='urn:oasis:names:tc:SAML:2.0:status:Success', now) ->
+  now ?= new Date()
   xmlbuilder.create(
     {'samlp:LogoutResponse':
         '@Destination': destination
         '@ID': '_' + crypto.randomBytes(21).toString('hex')
         '@InResponseTo': in_response_to
-        '@IssueInstant': (new Date()).toISOString()
+        '@IssueInstant': now.toISOString()
         '@Version': '2.0'
         '@xmlns:samlp': XMLNS.SAMLP
         '@xmlns:saml': XMLNS.SAML
@@ -431,7 +435,8 @@ add_namespaces_to_child_assertions = (xml_string) ->
 # Takes a DOM of a saml_response, private keys with which to attempt decryption and the
 # certificate(s) of the identity provider that issued it and will return a user object containing
 # the attributes or an error if keys are incorrect or the response is invalid.
-parse_authn_response = (saml_response, sp_private_keys, idp_certificates, allow_unencrypted, ignore_signature, require_session_index, ignore_timing, notbefore_skew, sp_audience, cb) ->
+parse_authn_response = (saml_response, sp_private_keys, idp_certificates, allow_unencrypted, ignore_signature, require_session_index, ignore_timing, notbefore_skew, sp_audience, now, cb) ->
+  now ?= new Date()
   user = {}
 
   async.waterfall [
@@ -480,9 +485,9 @@ parse_authn_response = (saml_response, sp_private_keys, idp_certificates, allow_
         if ignore_timing != true
           for attribute in conditions.attributes
             condition = attribute.name.toLowerCase()
-            if condition == 'notbefore' and Date.parse(attribute.value) > Date.now() + (notbefore_skew * 1000)
+            if condition == 'notbefore' and Date.parse(attribute.value) > now.valueOf() + (notbefore_skew * 1000)
               return cb_wf new SAMLError('SAML Response is not yet valid', {NotBefore: attribute.value})
-            if condition == 'notonorafter' and Date.parse(attribute.value) <= Date.now()
+            if condition == 'notonorafter' and Date.parse(attribute.value) <= now.valueOf()
               return cb_wf new SAMLError('SAML Response is no longer valid', {NotOnOrAfter: attribute.value})
 
         audience_restriction = conditions.getElementsByTagNameNS(XMLNS.SAML, 'AudienceRestriction')[0]
@@ -542,7 +547,7 @@ module.exports.ServiceProvider =
     #
     # Rest of options can be set/overwritten by the identity provider and/or at function call.
     constructor: (options) ->
-      {@entity_id, @private_key, @certificate, @assert_endpoint, @alt_private_keys, @alt_certs} = options
+      {@entity_id, @private_key, @certificate, @assert_endpoint, @alt_private_keys, @alt_certs, @now} = options
 
       options.audience ?= @entity_id
       options.notbefore_skew ?= 1
@@ -552,6 +557,8 @@ module.exports.ServiceProvider =
 
       @shared_options = _(options).pick(
         "force_authn", "auth_context", "nameid_format", "sign_get_request", "allow_unencrypted_assertion", "audience", "notbefore_skew")
+
+      @now ?= () => new Date()
 
     # Returns:
     #   Redirect URL at which a user can login
@@ -563,7 +570,7 @@ module.exports.ServiceProvider =
     create_login_request_url: (identity_provider, options, cb) ->
       options = set_option_defaults options, identity_provider.shared_options, @shared_options
 
-      { id, xml } = create_authn_request @entity_id, @assert_endpoint, identity_provider.sso_login_url, options.force_authn, options.auth_context, options.nameid_format
+      { id, xml } = create_authn_request @entity_id, @assert_endpoint, identity_provider.sso_login_url, options.force_authn, options.auth_context, options.nameid_format, @now()
       zlib.deflateRaw xml, (err, deflated) =>
         return cb err if err?
         try
@@ -586,7 +593,7 @@ module.exports.ServiceProvider =
     create_authn_request_xml: (identity_provider, options) ->
       options = set_option_defaults options, identity_provider.shared_options, @shared_options
 
-      { id, xml } = create_authn_request @entity_id, @assert_endpoint, identity_provider.sso_login_url, options.force_authn, options.auth_context, options.nameid_format
+      { id, xml } = create_authn_request @entity_id, @assert_endpoint, identity_provider.sso_login_url, options.force_authn, options.auth_context, options.nameid_format, @now()
       return sign_authn_request(xml, @private_key, options)
 
     # Returns:
@@ -658,7 +665,8 @@ module.exports.ServiceProvider =
                 options.require_session_index,
                 options.ignore_timing,
                 options.notbefore_skew,
-                options.audience
+                options.audience,
+                @now(),
                 cb_wf)
 
             when saml_response.getElementsByTagNameNS(XMLNS.SAMLP, 'LogoutResponse').length is 1
@@ -688,7 +696,7 @@ module.exports.ServiceProvider =
     create_logout_request_url: (identity_provider, options, cb) =>
       identity_provider = { sso_logout_url: identity_provider, options: {} } if _.isString(identity_provider)
       options = set_option_defaults options, identity_provider.shared_options, @shared_options
-      {id, xml} = create_logout_request @entity_id, options.name_id, options.session_index, identity_provider.sso_logout_url
+      {id, xml} = create_logout_request @entity_id, options.name_id, options.session_index, identity_provider.sso_logout_url, @now()
       zlib.deflateRaw xml, (err, deflated) =>
         return cb err if err?
         try
@@ -716,7 +724,7 @@ module.exports.ServiceProvider =
       identity_provider = { sso_logout_url: identity_provider, options: {} } if _.isString(identity_provider)
       options = set_option_defaults options, identity_provider.shared_options, @shared_options
 
-      xml = create_logout_response @entity_id, options.in_response_to, identity_provider.sso_logout_url
+      xml = create_logout_response @entity_id, options.in_response_to, identity_provider.sso_logout_url, @now()
       zlib.deflateRaw xml, (err, deflated) =>
         return cb err if err?
         try
@@ -734,7 +742,7 @@ module.exports.ServiceProvider =
     #   XML metadata, used during initial SAML configuration
     create_metadata: =>
       certs = [@certificate].concat @alt_certs
-      create_metadata @entity_id, @assert_endpoint, certs, certs
+      create_metadata @entity_id, @assert_endpoint, certs, certs, @now()
 
 module.exports.IdentityProvider =
   class IdentityProvider
