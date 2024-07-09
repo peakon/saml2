@@ -642,10 +642,9 @@ module.exports.ServiceProvider =
 
         (response_buffer, cb_wf) =>
           debug saml_response
-          saml_response_abnormalized = add_namespaces_to_child_assertions(response_buffer.toString())
-          saml_response = (new xmldom.DOMParser()).parseFromString(saml_response_abnormalized)
-
           try
+            saml_response_abnormalized = add_namespaces_to_child_assertions(response_buffer.toString())
+            saml_response = (new xmldom.DOMParser()).parseFromString(saml_response_abnormalized)
             response = { response_header: parse_response_header(saml_response) }
           catch err
             return cb err
